@@ -65,7 +65,7 @@ if (finePointer && !reducedMotion) {
   const target = { x: 0, y: 0, lift: 0 };
   let frame = null;
 
-  // Soft saturation: 1.0 at the card edge, easing toward MAX_TILT further out.
+  // Soft saturation: near 1.0 at the card edge, easing toward 1 far away.
   const shape = (value) => Math.tanh(value * 1.15);
 
   const render = () => {
@@ -100,26 +100,35 @@ if (finePointer && !reducedMotion) {
     if (frame === null) frame = requestAnimationFrame(render);
   };
 
+  // Cache the reference box so pointermove never triggers a layout read.
+  let box = null;
+
+  const measure = () => {
+    const rect = stageEl.getBoundingClientRect();
+    box = {
+      centerX: rect.left + rect.width / 2,
+      centerY: rect.top + rect.height / 2,
+      halfWidth: rect.width / 2 || 1,
+      halfHeight: rect.height / 2 || 1,
+    };
+  };
+
   const onPointerMove = (event) => {
     if (event.pointerType === 'touch') return;
-
-    // Use the stage box as the reference so the rotating card cannot
-    // feed its own movement back into the calculation.
-    const rect = stageEl.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-
-    const halfWidth = rect.width / 2 || 1;
-    const halfHeight = rect.height / 2 || 1;
+    if (!box) measure();
 
     // Normalized pointer position relative to the card (-1 .. 1 at the edges).
-    const nx = (event.clientX - centerX) / halfWidth;
-    const ny = (event.clientY - centerY) / halfHeight;
+    const nx = (event.clientX - box.centerX) / box.halfWidth;
+    const ny = (event.clientY - box.centerY) / box.halfHeight;
 
     // The card leans away from the pointer's vertical position and
-    // towards its horizontal position.
-    target.y = shape(nx) * MAX_TILT;
-    target.x = -shape(ny) * MAX_TILT;
+    // towards its horizontal position. The further the pointer is from
+    // the card, the gentler the lean (but it never stops responding).
+    const distance = Math.max(Math.abs(nx), Math.abs(ny));
+    const reach = 1 / (1 + Math.max(0, distance - 1) * 0.55);
+
+    target.y = shape(nx) * MAX_TILT * reach;
+    target.x = -shape(ny) * MAX_TILT * reach;
 
     // Lift the card a little when the pointer is over/near it.
     const overCard = Math.abs(nx) <= 1 && Math.abs(ny) <= 1;
@@ -148,9 +157,26 @@ if (finePointer && !reducedMotion) {
   };
 
   window.addEventListener('pointermove', onPointerMove, { passive: true });
-  window.addEventListener('pointerleave', reset);
-  window.addEventListener('blur', reset);
+
+  // Re-measure on scroll, resize, or when the quote height changes.
+  window.addEventListener('resize', measure);
+  window.addEventListener('scroll', measure, { passive: true });
+
+  if ('ResizeObserver' in window) {
+    new ResizeObserver(measure).observe(stageEl);
+  }
+
+  // The entrance animation shifts the stage, so re-measure once it ends.
+  window.addEventListener('load', measure);
+  setTimeout(measure, 800);
+
+  // Reset when the pointer leaves the viewport or the window loses focus.
+  document.addEventListener('pointerout', (event) => {
+    if (!event.relatedTarget && event.pointerType !== 'touch') reset();
+  });
+
   document.addEventListener('mouseleave', reset);
+  window.addEventListener('blur', reset);
 } else {
   // Touch / reduced motion: keep the card perfectly flat.
   cardEl.style.setProperty('--rx', '0deg');
